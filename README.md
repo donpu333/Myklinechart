@@ -35,3 +35,7 @@ yarn add @klinecharts/pro
 
 ## ©️ License
 KLineChart Pro is available under the Apache License V2.
+
+## Yarn dev 
+
+![image](https://github.com/user-attachments/assets/c34fd55f-a7dd-4983-b633-33f89b4fb74a)
