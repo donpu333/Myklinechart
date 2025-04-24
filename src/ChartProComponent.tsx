@@ -1,17 +1,3 @@
-/**
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
-
- * http://www.apache.org/licenses/LICENSE-2.0
-
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 import { createSignal, createEffect, onMount, Show, onCleanup, startTransition, Component } from 'solid-js'
 
 import {
@@ -42,13 +28,12 @@ interface PrevSymbolPeriod {
   period: Period
 }
 
-function createIndicator (widget: Nullable<Chart>, indicatorName: string, isStack?: boolean, paneOptions?: PaneOptions): Nullable<string> {
+function createIndicator(widget: Nullable<Chart>, indicatorName: string, isStack?: boolean, paneOptions?: PaneOptions): Nullable<string> {
   if (indicatorName === 'VOL') {
     paneOptions = { gap: { bottom: 2 }, ...paneOptions }
   }
   return widget?.createIndicator({
     name: indicatorName,
-    // @ts-expect-error
     createTooltipDataSource: ({ indicator, defaultStyles }) => {
       const icons = []
       if (indicator.visible) {
@@ -60,13 +45,18 @@ function createIndicator (widget: Nullable<Chart>, indicatorName: string, isStac
         icons.push(defaultStyles.tooltip.icons[2])
         icons.push(defaultStyles.tooltip.icons[3])
       }
-      return { icons }
+      return {
+        name: indicator.name,
+        calcParamsText: indicator.calcParams.join(', '),
+        values: [],
+        icons
+      }
     }
   }, isStack, paneOptions) ?? null
 }
 
 const ChartProComponent: Component<ChartProComponentProps> = props => {
-  let widgetRef: HTMLDivElement | undefined = undefined
+  let widgetRef: HTMLDivElement | undefined
   let widget: Nullable<Chart> = null
 
   let priceUnitDom: HTMLElement
@@ -101,6 +91,8 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
     visible: false, indicatorName: '', paneId: '', calcParams: [] as Array<any>
   })
 
+  const priceLabels: { [key: string]: HTMLElement } = {}
+
   props.ref({
     setTheme,
     getTheme: () => theme(),
@@ -118,6 +110,7 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
 
   const documentResize = () => {
     widget?.resize()
+    updatePriceLabelsPosition()
   }
 
   const adjustFromTo = (period: Period, toTimestamp: number, count: number) => {
@@ -172,8 +165,48 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
     return [from, to]
   }
 
+  const showPriceLabel = (price: number, y: number, id: string) => {
+    const priceLabel = document.createElement('div')
+    priceLabel.className = 'klinecharts-pro-price-label'
+    priceLabel.style.position = 'absolute'
+    priceLabel.style.right = '10px'
+    priceLabel.style.top = `${y}px`
+    priceLabel.style.backgroundColor = '#f00'
+    priceLabel.style.color = '#FFFFFF'
+    priceLabel.style.padding = '4px 8px'
+    priceLabel.style.borderRadius = '4px'
+    priceLabel.style.fontSize = '14px'
+    priceLabel.style.zIndex = '10'
+    priceLabel.innerHTML = price.toFixed(2)
+    priceLabel.dataset.y = y.toString()
+    if (widgetRef) {
+      widgetRef.appendChild(priceLabel)
+      console.log(`Метка добавлена: price=${price}, y=${y}, id=${id}`)
+    } else {
+      console.error('widgetRef не инициализирован при добавлении метки')
+    }
+    priceLabels[id] = priceLabel
+  }
+
+  const updatePriceLabelsPosition = () => {
+    Object.values(priceLabels).forEach(label => {
+      const y = parseFloat(label.dataset.y || '0')
+      label.style.top = `${y}px`
+    })
+  }
+
+  const removePriceLabel = (id: string) => {
+    const label = priceLabels[id]
+    if (label) {
+      label.remove()
+      delete priceLabels[id]
+      console.log(`Метка удалена: id=${id}`)
+    }
+  }
+
   onMount(() => {
     window.addEventListener('resize', documentResize)
+    console.log('Инициализация widgetRef:', widgetRef)
     widget = init(widgetRef!, {
       customApi: {
         formatDate: (dateTimeFormat: Intl.DateTimeFormat, timestamp, format: string, type: FormatDateType) => {
@@ -208,37 +241,49 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
           }
           return utils.formatDate(dateTimeFormat, timestamp, 'YYYY-MM-DD HH:mm')
         }
-      }
+      },
+      type: 'bar', // Изменяем тип графика с 'candle' на 'bar'
     })
+    console.log('Widget инициализирован:', widget)
 
     if (widget) {
-      const watermarkContainer = widget.getDom('candle_pane', DomPosition.Main)
-      if (watermarkContainer) {
-        let watermark = document.createElement('div')
-        watermark.className = 'klinecharts-pro-watermark'
-        if (utils.isString(props.watermark)) {
-          const str = (props.watermark as string).replace(/(^\s*)|(\s*$)/g, '')
-          watermark.innerHTML = str
-        } else {
-          watermark.appendChild(props.watermark as Node)
-        }
-        watermarkContainer.appendChild(watermark)
-      }
-
       const priceUnitContainer = widget.getDom('candle_pane', DomPosition.YAxis)
       priceUnitDom = document.createElement('span')
       priceUnitDom.className = 'klinecharts-pro-price-unit'
       priceUnitContainer?.appendChild(priceUnitDom)
+
+      widget.subscribeAction(ActionType.OnDrawEnd, (data) => {
+        console.log('ActionType.OnDrawEnd:', data)
+        if (data.name === 'horizontalRay' || data.name === 'horizontalLine') {
+          const price = data.points[0].price
+          const y = data.points[0].y
+          const id = data.id
+          showPriceLabel(price, y, id)
+        }
+      })
+
+      widget.subscribeAction(ActionType.RemoveOverlay, (data) => {
+        console.log('ActionType.OnRemoveOverlay:', data)
+        if (data.name === 'horizontalRay' || data.name === 'horizontalLine') {
+          removePriceLabel(data.id)
+        }
+      })
+
+      widget.subscribeAction(ActionType.OnZoom, () => {
+        updatePriceLabelsPosition()
+      })
+      widget.subscribeAction(ActionType.OnScroll, () => {
+        updatePriceLabelsPosition()
+      })
     }
 
     mainIndicators().forEach(indicator => {
       createIndicator(widget, indicator, true, { id: 'candle_pane' })
     })
-    const subIndicatorMap = {}
+    const subIndicatorMap: Record<string, string> = {}
     props.subIndicators!.forEach(indicator => {
       const paneId = createIndicator(widget, indicator, true)
       if (paneId) {
-        // @ts-expect-error
         subIndicatorMap[indicator] = paneId
       }
     })
@@ -250,6 +295,7 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
         const [to] = adjustFromTo(p, timestamp!, 1)
         const [from] = adjustFromTo(p, to, 500)
         const kLineDataList = await props.datafeed.getHistoryKLineData(symbol(), p, from, to)
+        console.log('Загруженные данные:', kLineDataList)
         widget?.applyMoreData(kLineDataList, kLineDataList.length > 0)
         loading = false
       }
@@ -280,9 +326,8 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
               newMainIndicators.splice(newMainIndicators.indexOf(data.indicatorName), 1)
               setMainIndicators(newMainIndicators)
             } else {
-              const newIndicators = { ...subIndicators() }
+              const newIndicators: Record<string, string> = { ...subIndicators() }
               widget?.removeIndicator(data.paneId, data.indicatorName)
-              // @ts-expect-error
               delete newIndicators[data.indicatorName]
               setSubIndicators(newIndicators)
             }
@@ -320,7 +365,9 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
       const get = async () => {
         const [from, to] = adjustFromTo(p, new Date().getTime(), 500)
         const kLineDataList = await props.datafeed.getHistoryKLineData(s, p, from, to)
+        console.log('Новые данные:', kLineDataList)
         widget?.applyNewData(kLineDataList, kLineDataList.length > 0)
+
         props.datafeed.subscribe(s, p, data => {
           widget?.updateData(data)
         })
@@ -338,6 +385,14 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
     widget?.setStyles(t)
     const color = t === 'dark' ? '#929AA5' : '#76808F'
     widget?.setStyles({
+      grid: {
+        show: false
+      },
+      candle: {
+        tooltip: {
+          // Removed invalid property "showOhlc"
+        }
+      },
       indicator: {
         tooltip: {
           icons: [
@@ -466,17 +521,15 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
             setMainIndicators(newMainIndicators)
           }}
           onSubIndicatorChange={data => {
-            const newSubIndicators = { ...subIndicators() }
+            const newSubIndicators: Record<string, string> = { ...subIndicators() }
             if (data.added) {
               const paneId = createIndicator(widget, data.name)
               if (paneId) {
-                // @ts-expect-error
                 newSubIndicators[data.name] = paneId
               }
             } else {
               if (data.paneId) {
                 widget?.removeIndicator(data.paneId, data.name)
-                // @ts-expect-error
                 delete newSubIndicators[data.name]
               }
             }
@@ -537,7 +590,7 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
           try {
             await startTransition(() => setDrawingBarVisible(!drawingBarVisible()))
             widget?.resize()
-          } catch (e) {}    
+          } catch (e) {}
         }}
         onSymbolClick={() => { setSymbolSearchModalVisible(!symbolSearchModalVisible()) }}
         onPeriodChange={setPeriod}
@@ -551,8 +604,7 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
           }
         }}
       />
-      <div
-        class="klinecharts-pro-content">
+      <div class="klinecharts-pro-content">
         <Show when={loadingVisible()}>
           <Loading/>
         </Show>
@@ -574,4 +626,4 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
   )
 }
 
-export default ChartProComponent
+export default ChartProComponent;
